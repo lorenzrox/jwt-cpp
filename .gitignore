@@ -311,3 +311,4 @@ test
 docs
 
 build/*
+/out/build/x64-Debug
