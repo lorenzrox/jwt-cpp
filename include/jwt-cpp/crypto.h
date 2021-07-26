@@ -1,7 +1,7 @@
 #ifndef JWT_CPP_CRYPTO_H
 #define JWT_CPP_CRYPTO_H
 
-#if defined(_WIN32) && !defined(JWT_DISABLE_WIN_CRYPTO)
+#if defined(_WIN32) && !defined(JWT_DISABLE_WIN_CAPI)
 
 #include "win_crypto.h"
 

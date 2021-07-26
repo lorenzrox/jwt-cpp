@@ -1,6 +1,8 @@
 #ifndef JWT_CPP_WIN_CRYPTO_H
 #define JWT_CPP_WIN_CRYPTO_H
 
+#define NOMINMAX
+
 #include <Windows.h>
 #include <capi.h>
 #include <iostream>
@@ -8,14 +10,6 @@
 #include <vector>
 
 #include "error.h"
-
-#ifdef min
-#undef min
-#endif
-
-#ifdef max
-#undef max
-#endif
 
 namespace jwt {
 	namespace crypto {
