@@ -31,7 +31,7 @@ std::string make_pico_token() {
 		.set_payload_claim("strings", jwt::claim(list))
 		.set_payload_claim("array", jwt::claim(big_numbers.begin(), big_numbers.end()))
 		.set_payload_claim("object", from_raw_json)
-		.sign(jwt::algorithm::none{});
+		.sign(jwt::crypto::algorithm::none{});
 }
 
 std::string make_nlohmann_token() {
@@ -132,7 +132,7 @@ std::string make_nlohmann_token() {
 		.set_payload_claim("strings", list)
 		.set_payload_claim("array", {big_numbers.begin(), big_numbers.end()})
 		.set_payload_claim("object", from_raw_json)
-		.sign(jwt::algorithm::none{});
+		.sign(jwt::crypto::algorithm::none{});
 }
 
 int main(int argc, const char** argv) {

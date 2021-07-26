@@ -47,7 +47,7 @@ YwIDAQAB
 					 .set_issued_at(std::chrono::system_clock::now())
 					 .set_expires_at(std::chrono::system_clock::now() + std::chrono::seconds{36000})
 					 .set_payload_claim("sample", jwt::claim(std::string{"test"}))
-					 .sign(jwt::algorithm::rs256(rsa_pub_key, rsa_priv_key, "", ""));
+					 .sign(jwt::crypto::algorithm::rs256(rsa_pub_key, rsa_priv_key, "", ""));
 
 	std::cout << "token:\n" << token << std::endl;
 }

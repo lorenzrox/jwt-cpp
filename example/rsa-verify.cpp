@@ -50,7 +50,7 @@ YwIDAQAB
 						"uc2z5c05CCXqVSpfCjWbh9gQ";
 
 	auto verify =
-		jwt::verify().allow_algorithm(jwt::algorithm::rs256(rsa_pub_key, rsa_priv_key, "", "")).with_issuer("auth0");
+		jwt::verify().allow_algorithm(jwt::crypto::algorithm::rs256(rsa_pub_key, rsa_priv_key, "", "")).with_issuer("auth0");
 
 	auto decoded = jwt::decode(token);
 

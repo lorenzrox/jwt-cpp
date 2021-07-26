@@ -15,7 +15,7 @@ option(JWT_EXTERNAL_PICOJSON "Use find_package() to locate picojson, provided to
 option(JWT_DISABLE_BASE64 "Do not include the base64 implementation from this library" OFF)
 option(JWT_DISABLE_PICOJSON "Do not provide the picojson template specialiaze" OFF)
 
-set(JWT_SSL_LIBRARY_OPTIONS OpenSSL LibreSSL)
+set(JWT_SSL_LIBRARY_OPTIONS OpenSSL LibreSSL WinCAPI)
 set(JWT_SSL_LIBRARY OpenSSL CACHE STRING "Determines which SSL library to build with")
 set_property(CACHE JWT_SSL_LIBRARY PROPERTY STRINGS ${JWT_SSL_LIBRARY_OPTIONS})
 
@@ -56,6 +56,10 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 target_include_directories(jwt-cpp INTERFACE $<BUILD_INTERFACE:${JWT_INCLUDE_PATH}>
                                              $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
+if(${JWT_SSL_LIBRARY} MATCHES "WinCAPI") 
+  target_link_libraries(jwt-cpp crypt32.lib)
+endif()
 
 if(${JWT_SSL_LIBRARY} MATCHES "OpenSSL")
   target_link_libraries(jwt-cpp INTERFACE OpenSSL::SSL OpenSSL::Crypto)

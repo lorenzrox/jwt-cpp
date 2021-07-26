@@ -1,6 +1,8 @@
 #ifndef JWT_CPP_OPENSSL_CRYPTO_H
 #define JWT_CPP_OPENSSL_CRYPTO_H
 
+#include <iostream>
+#include <memory>
 #include <openssl/ec.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -195,6 +197,38 @@ namespace jwt {
 					return nullptr;
 				}
 				return pkey;
+			}
+
+			/**
+			 * \brief Load a public key from a string.
+			 *
+			 * The string should contain a pem encoded certificate or public key
+			 *
+			 * \param certstr	String containing the certificate or key encoded as pem
+			 * \param pw		Password used to decrypt certificate or key (leave empty if not encrypted)
+			 * \throw			rsa_exception if an error occurred
+			 */
+			inline std::shared_ptr<EVP_PKEY> load_public_key_from_string(const std::string& key,
+																	 const std::string& password = "") {
+				std::error_code ec;
+				auto res = load_public_key_from_string(key, password, ec);
+				error::throw_if_error(ec);
+				return res;
+			}
+
+			/**
+			 * \brief Load a private key from a string.
+			 *
+			 * \param key		String containing a private key as pem
+			 * \param pw		Password used to decrypt key (leave empty if not encrypted)
+			 * \throw			rsa_exception if an error occurred
+			 */
+			inline std::shared_ptr<EVP_PKEY> load_private_key_from_string(const std::string& key,
+																	  const std::string& password = "") {
+				std::error_code ec;
+				auto res = load_private_key_from_string(key, password, ec);
+				error::throw_if_error(ec);
+				return res;
 			}
 
 			/**

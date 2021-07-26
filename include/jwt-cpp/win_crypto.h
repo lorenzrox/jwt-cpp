@@ -2,13 +2,10 @@
 #define JWT_CPP_WIN_CRYPTO_H
 
 #include <Windows.h>
+#include <capi.h>
 #include <iostream>
 #include <memory>
 #include <vector>
-
-#include <capi.h>
-
-#include <bcrypt.h>
 
 #include "error.h"
 
@@ -227,12 +224,6 @@ namespace jwt {
 
 		namespace helper {
 
-			void reverse(unsigned char& b) {
-				b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
-				b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
-				b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
-			}
-
 			/**
 			 * \brief Extract the public key of a pem certificate
 			 *
@@ -240,9 +231,53 @@ namespace jwt {
 			 * \param pw		Password used to decrypt certificate (leave empty if not encrypted)
 			 * \param ec		error_code for error_detection (gets cleared if no error occures)
 			 */
-			inline std::string extract_pubkey_from_cert(const std::string& certstr, const std::string& pw,
+			inline std::string extract_pubkey_from_cert(const std::string& certstr, const std::string& password,
 														std::error_code& ec) {
 				ec.clear();
+
+				DWORD dwBufferLen = 0;
+				if (!CryptStringToBinaryA(certstr.data(), certstr.size(), CRYPT_STRING_BASE64HEADER, NULL, &dwBufferLen,
+										  NULL, NULL)) {
+					ec = error::rsa_error::cert_load_failed;
+					return {};
+				}
+
+				std::vector<BYTE> buffer(dwBufferLen);
+				if (!CryptStringToBinaryA(certstr.data(), certstr.size(), CRYPT_STRING_BASE64HEADER, buffer.data(),
+										  &dwBufferLen, NULL, NULL)) {
+					ec = error::rsa_error::cert_load_failed;
+					return {};
+				}
+
+				DWORD cbSignedContentInfoBuffer = 0;
+				LocalBuffer<BYTE> signedContentInfoBuffer;
+				if (!CryptDecodeObjectEx(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, X509_CERT, buffer.data(), dwBufferLen,
+										 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL,
+										 &signedContentInfoBuffer, &cbSignedContentInfoBuffer)) {
+					ec = error::rsa_error::cert_load_failed;
+					return {};
+				}
+
+				auto pSignedContentInfo = reinterpret_cast<PCERT_SIGNED_CONTENT_INFO>(signedContentInfoBuffer.get());
+
+				CCRYPT_OID_INFO* oidInfo =
+					CryptFindOIDInfo(CRYPT_OID_INFO_OID_KEY, pSignedContentInfo->SignatureAlgorithm.pszObjId, 0);
+				if (!oidInfo || oidInfo->dwGroupId != CRYPT_SIGN_ALG_OID_GROUP_ID) {
+					ec = error::rsa_error::cert_load_failed;
+					return {};
+				}
+
+				DWORD cbCertInfoBuffer = 0;
+				LocalBuffer<BYTE> certInfoBuffer;
+				if (!CryptDecodeObjectEx(X509_ASN_ENCODING, X509_CERT_TO_BE_SIGNED,
+										 pSignedContentInfo->ToBeSigned.pbData, pSignedContentInfo->ToBeSigned.cbData,
+										 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &certInfoBuffer,
+										 &cbCertInfoBuffer)) {
+					ec = error::rsa_error::cert_load_failed;
+					return {};
+				}
+
+				auto pCertInfo = reinterpret_cast<PCERT_INFO>(certInfoBuffer.get());
 
 				CCryptContext context;
 				if (!CryptAcquireContext(&context, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
@@ -250,36 +285,27 @@ namespace jwt {
 					return {};
 				}
 
-				DWORD dwBufferLen = 0;
-				if (!CryptStringToBinaryA(certstr.data(), 0, CRYPT_STRING_BASE64HEADER, NULL, &dwBufferLen, NULL,
-										  NULL)) {
+				CCryptKey key;
+				if (!CryptImportPublicKeyInfo(context.get(), X509_ASN_ENCODING, &pCertInfo->SubjectPublicKeyInfo,
+											  &key)) {
 					ec = error::rsa_error::cert_load_failed;
 					return {};
 				}
 
-				std::vector<BYTE> buffer(dwBufferLen);
-				if (!CryptStringToBinaryA(certstr.data(), 0, CRYPT_STRING_BASE64HEADER, buffer.data(), &dwBufferLen,
-										  NULL, NULL)) {
+				DWORD cbBlobSize = 0;
+				if (!CryptExportKey(key.get(), NULL, PUBLICKEYBLOB, 0, NULL, &cbBlobSize)) {
 					ec = error::rsa_error::cert_load_failed;
 					return {};
 				}
 
-				DWORD cbKeyInfo = 0;
-				LocalBuffer<BYTE> certificateInfo;
-				if (!CryptDecodeObjectEx(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, PKCS_ENCRYPTED_PRIVATE_KEY_INFO,
-										 buffer.data(), dwBufferLen, CRYPT_DECODE_ALLOC_FLAG, NULL, &certificateInfo,
-										 &cbKeyInfo)) {
+				std::string result(cbBlobSize, '\0');
+				if (!CryptExportKey(key.get(), NULL, PUBLICKEYBLOB, 0, reinterpret_cast<BYTE*>(&result[0]),
+									&cbBlobSize)) {
 					ec = error::rsa_error::cert_load_failed;
 					return {};
 				}
 
-				auto signedCertificateInfo = reinterpret_cast<PCERT_SIGNED_CONTENT_INFO>(certificateInfo.get());
-
-				auto certContext = CertCreateContext(
-					CERT_STORE_CERTIFICATE_CONTEXT, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-					signedCertificateInfo->ToBeSigned.pbData, signedCertificateInfo->ToBeSigned.cbData, 0, NULL);
-
-				return "";
+				return result;
 			}
 
 			/**
@@ -301,25 +327,27 @@ namespace jwt {
 												  std::error_code& ec) {
 				ec.clear();
 
+				const auto decodedStr = decode(cert_base64_der_str);
+
+				DWORD cbKeyInfoBuffer = 0;
+				LocalBuffer<BYTE> keyInfoBuffer;
+				if (!CryptDecodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+										 reinterpret_cast<const BYTE*>(decodedStr.data()), decodedStr.size(),
+										 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
+										 &cbKeyInfoBuffer)) {
+					ec = error::rsa_error::create_mem_bio_failed;
+					return {};
+				}
+
 				CCryptContext context;
 				if (!CryptAcquireContext(&context, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
 					ec = error::rsa_error::create_mem_bio_failed;
 					return {};
 				}
 
-				const auto decodedStr = decode(cert_base64_der_str);
-
-				DWORD cbKeyBlob = 0;
-				LocalBuffer<BYTE> keyInfo;
-				if (!CryptDecodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO, decodedStr.data(), decodedStr.size(),
-										 CRYPT_DECODE_ALLOC_FLAG, NULL, &keyInfo, &cbKeyBlob)) {
-					ec = error::rsa_error::create_mem_bio_failed;
-					return {};
-				}
-
 				CCryptKey key;
 				if (!CryptImportPublicKeyInfo(context.get(), X509_ASN_ENCODING,
-											  reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(keyInfo.get()), &key)) {
+											  reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(keyInfoBuffer.get()), &key)) {
 					ec = error::rsa_error::create_mem_bio_failed;
 					return {};
 				}
@@ -331,28 +359,30 @@ namespace jwt {
 					return {};
 				}
 
-				std::unique_ptr<BYTE> pkeyBuffer(new BYTE[cbPKey]);
+				std::vector<BYTE> pkeyBuffer(cbPKey);
 				if (!CryptExportPublicKeyInfo(context.get(), AT_KEYEXCHANGE, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-											  reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(pkeyBuffer.get()), &cbPKey)) {
+											  reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(pkeyBuffer.data()), &cbPKey)) {
 					ec = error::rsa_error::create_mem_bio_failed;
 					return {};
 				}
 
-				if (!CryptEncodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO, pkeyBuffer.get(),
-										 CRYPT_ENCODE_ALLOC_FLAG, NULL, &keyInfo, &cbKeyBlob)) {
+				if (!CryptEncodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO, pkeyBuffer.data(),
+										 CRYPT_ENCODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
+										 &cbKeyInfoBuffer)) {
 					ec = error::rsa_error::create_mem_bio_failed;
 					return {};
 				}
 
-				DWORD dwBufferLen = 0;
-				if (!CryptBinaryToStringA(keyInfo.get(), cbKeyBlob, CRYPT_STRING_BASE64HEADER, NULL, &dwBufferLen)) {
+				DWORD cbKeyBlob = 0;
+				if (!CryptBinaryToStringA(keyInfoBuffer.get(), cbKeyInfoBuffer, CRYPT_STRING_BASE64HEADER, NULL,
+										  &cbKeyBlob)) {
 					ec = error::rsa_error::write_cert_failed;
 					return {};
 				}
 
-				std::string keyBlob(dwBufferLen, '\0');
-				if (!CryptBinaryToStringA(keyInfo.get(), cbKeyBlob, CRYPT_STRING_BASE64HEADER, &keyBlob[0],
-										  &dwBufferLen)) {
+				std::string keyBlob(cbKeyInfoBuffer, '\0');
+				if (!CryptBinaryToStringA(keyInfoBuffer.get(), cbKeyInfoBuffer, CRYPT_STRING_BASE64HEADER, &keyBlob[0],
+										  &cbKeyBlob)) {
 					ec = error::rsa_error::write_cert_failed;
 					return {};
 				}
@@ -360,6 +390,179 @@ namespace jwt {
 				return keyBlob;
 			}
 
+			/**
+			 * \brief Load a public key from a string.
+			 *
+			 * The string should contain a pem encoded certificate or public key
+			 *
+			 * \param certstr	String containing the certificate encoded as pem
+			 * \param pw		Password used to decrypt certificate (leave empty if not encrypted)
+			 * \param ec		error_code for error_detection (gets cleared if no error occures)
+			 */
+			inline std::string load_public_key_from_string(const std::string& pubkey, const std::string& password,
+														   std::error_code& ec) {
+				ec.clear();
+
+				if (pubkey.find("-----BEGIN CERTIFICATE-----") == 0) {
+					return extract_pubkey_from_cert(pubkey, password, ec);
+				} else {
+					DWORD dwBufferLen = 0;
+					if (!CryptStringToBinaryA(pubkey.data(), pubkey.size(), CRYPT_STRING_BASE64HEADER, NULL,
+											  &dwBufferLen, NULL, NULL)) {
+						ec = error::rsa_error::load_key_bio_read;
+						return {};
+					}
+
+					std::vector<BYTE> buffer(dwBufferLen);
+					if (!CryptStringToBinaryA(pubkey.data(), pubkey.size(), CRYPT_STRING_BASE64HEADER, buffer.data(),
+											  &dwBufferLen, NULL, NULL)) {
+						ec = error::rsa_error::load_key_bio_read;
+						return {};
+					}
+
+					DWORD cbKeyInfoBuffer = 0;
+					LocalBuffer<BYTE> keyInfoBuffer;
+					if (!CryptDecodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO, buffer.data(), buffer.size(),
+											 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
+											 &cbKeyInfoBuffer)) {
+						ec = error::rsa_error::load_key_bio_read;
+						return {};
+					}
+
+					CCryptContext context;
+					if (!CryptAcquireContext(&context, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+						ec = error::rsa_error::load_key_bio_read;
+						return {};
+					}
+
+					CCryptKey key;
+					if (!CryptImportPublicKeyInfo(context.get(), X509_ASN_ENCODING,
+												  reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(keyInfoBuffer.get()), &key)) {
+						ec = error::rsa_error::load_key_bio_read;
+						return {};
+					}
+
+					DWORD cbKeyBlob = 0;
+					if (!CryptExportKey(key.get(), NULL, PUBLICKEYBLOB, 0, NULL, &cbKeyBlob)) {
+						ec = error::rsa_error::load_key_bio_read;
+						return {};
+					}
+
+					std::string keyBlob(cbKeyBlob, '\0');
+					if (!CryptExportKey(key.get(), NULL, PUBLICKEYBLOB, 0, reinterpret_cast<BYTE*>(&keyBlob[0]),
+										&cbKeyBlob)) {
+						ec = error::rsa_error::load_key_bio_read;
+						return {};
+					}
+
+					return keyBlob;
+				}
+			}
+
+			/**
+			 * \brief Load a private key from a string.
+			 *
+			 * \param key		String containing a private key as pem
+			 * \param pw		Password used to decrypt key (leave empty if not encrypted)
+			 * \param ec		error_code for error_detection (gets cleared if no error occures)
+			 */
+			inline std::string load_private_key_from_string(const std::string& privkey, const std::string& password,
+															std::error_code& ec) {
+				ec.clear();
+
+				DWORD dwBufferLen = 0;
+				if (!CryptStringToBinaryA(privkey.data(), privkey.size(), CRYPT_STRING_BASE64HEADER, NULL, &dwBufferLen,
+										  NULL, NULL)) {
+					ec = error::rsa_error::load_key_bio_read;
+					return {};
+				}
+
+				std::vector<BYTE> buffer(dwBufferLen);
+				if (!CryptStringToBinaryA(privkey.data(), privkey.size(), CRYPT_STRING_BASE64HEADER, buffer.data(),
+										  &dwBufferLen, NULL, NULL)) {
+					ec = error::rsa_error::load_key_bio_read;
+					return {};
+				}
+
+				DWORD cbKeyInfoBuffer = 0;
+				LocalBuffer<BYTE> keyInfoBuffer;
+				if (!CryptDecodeObjectEx(X509_ASN_ENCODING, PKCS_PRIVATE_KEY_INFO, buffer.data(), buffer.size(),
+										 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
+										 &cbKeyInfoBuffer)) {
+					ec = error::rsa_error::load_key_bio_read;
+					return {};
+				}
+
+				auto pPrivateKeyInfo = reinterpret_cast<PCRYPT_PRIVATE_KEY_INFO>(keyInfoBuffer.get());
+
+				DWORD cbPrivateKeyBuffer = 0;
+				LocalBuffer<BYTE> privateKeyInfoBuffer;
+				if (!CryptDecodeObjectEx(X509_ASN_ENCODING, PKCS_RSA_PRIVATE_KEY, pPrivateKeyInfo->PrivateKey.pbData,
+										 pPrivateKeyInfo->PrivateKey.cbData,
+										 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
+										 &cbKeyInfoBuffer)) {
+					ec = error::rsa_error::load_key_bio_read;
+					return {};
+				}
+
+				CCryptContext context;
+				if (!CryptAcquireContext(&context, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+					ec = error::rsa_error::load_key_bio_read;
+					return {};
+				}
+
+				CCryptKey key;
+				if (!CryptImportKey(context.get(), keyInfoBuffer.get(), cbKeyInfoBuffer, NULL, CRYPT_EXPORTABLE,
+									&key)) {
+					ec = error::rsa_error::load_key_bio_read;
+					return {};
+				}
+
+				DWORD cbKeyBlob = 0;
+				if (!CryptExportKey(key.get(), NULL, PRIVATEKEYBLOB, 0, NULL, &cbKeyBlob)) {
+					ec = error::rsa_error::load_key_bio_read;
+					return {};
+				}
+
+				std::string keyBlob(cbKeyBlob, '\0');
+				if (!CryptExportKey(key.get(), NULL, PRIVATEKEYBLOB, 0, reinterpret_cast<BYTE*>(&keyBlob[0]),
+									&cbKeyBlob)) {
+					ec = error::rsa_error::load_key_bio_read;
+					return {};
+				}
+
+				return keyBlob;
+			}
+
+			/**
+			 * \brief Load a public key from a string.
+			 *
+			 * The string should contain a pem encoded certificate or public key
+			 *
+			 * \param certstr	String containing the certificate or key encoded as pem
+			 * \param pw		Password used to decrypt certificate or key (leave empty if not encrypted)
+			 * \throw			rsa_exception if an error occurred
+			 */
+			inline std::string load_public_key_from_string(const std::string& key, const std::string& password = "") {
+				std::error_code ec;
+				auto res = load_public_key_from_string(key, password, ec);
+				error::throw_if_error(ec);
+				return res;
+			}
+
+			/**
+			 * \brief Load a private key from a string.
+			 *
+			 * \param key		String containing a private key as pem
+			 * \param pw		Password used to decrypt key (leave empty if not encrypted)
+			 * \throw			rsa_exception if an error occurred
+			 */
+			inline std::string load_private_key_from_string(const std::string& key, const std::string& password = "") {
+				std::error_code ec;
+				auto res = load_private_key_from_string(key, password, ec);
+				error::throw_if_error(ec);
+				return res;
+			}
 		} // namespace helper
 
 		/**
@@ -499,16 +702,13 @@ namespace jwt {
 					const std::string& public_key_password, const std::string& private_key_password, ALG_ID hash_alg,
 					std::string name)
 					: hash_alg(hash_alg), alg_name(std::move(name)) {
-					/*if (!private_key.empty()) {
-						pkey = helper::load_private_key_from_string(private_key, private_key_password);
-					}
-					else if (!public_key.empty()) {
+					if (!private_key.empty()) {
+						helper::load_private_key_from_string(private_key, private_key_password);
+					} else if (!public_key.empty()) {
 						pkey = helper::load_public_key_from_string(public_key, public_key_password);
+					} else {
+						throw new rsa_exception(error::rsa_error::no_key_provided);
 					}
-					else
-					{
-						throw rsa_exception(error::rsa_error::no_key_provided);
-					}*/
 				}
 
 				/**
@@ -521,8 +721,16 @@ namespace jwt {
 					ec.clear();
 
 					CCryptContext context;
-					if (!CryptAcquireContext(&context, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+					if (!CryptAcquireContext(&context, NULL, MS_ENH_RSA_AES_PROV, PROV_RSA_AES,
+											 CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
 						ec = error::signature_generation_error::create_context_failed;
+						return {};
+					}
+
+					CCryptKey key;
+					if (!CryptImportKey(context.get(), reinterpret_cast<const BYTE*>(pkey.data()), pkey.size(), 0, NULL,
+										&key)) {
+						ec = error::signature_generation_error::signinit_failed;
 						return {};
 					}
 
@@ -538,13 +746,13 @@ namespace jwt {
 					}
 
 					DWORD cbSignature = 0;
-					if (!CryptSignHash(hash.get(), AT_SIGNATURE, NULL, 0, NULL, &cbSignature)) {
+					if (!CryptSignHash(hash.get(), AT_KEYEXCHANGE, NULL, 0, NULL, &cbSignature)) {
 						ec = error::signature_generation_error::signupdate_failed;
 						return {};
 					}
 
 					std::string signature(cbSignature, '\0');
-					if (!CryptSignHash(hash.get(), AT_SIGNATURE, NULL, 0, reinterpret_cast<BYTE*>(&signature[0]),
+					if (!CryptSignHash(hash.get(), AT_KEYEXCHANGE, NULL, 0, reinterpret_cast<BYTE*>(&signature[0]),
 									   &cbSignature)) {
 						ec = error::signature_generation_error::signfinal_failed;
 						return {};
@@ -563,7 +771,8 @@ namespace jwt {
 					ec.clear();
 
 					CCryptContext context;
-					if (!CryptAcquireContext(&context, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+					if (!CryptAcquireContext(&context, NULL, MS_ENH_RSA_AES_PROV, PROV_RSA_AES,
+											 CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
 						ec = error::signature_verification_error::create_context_failed;
 						return;
 					}
