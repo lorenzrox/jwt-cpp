@@ -2,6 +2,7 @@
 #define JWT_CPP_WIN_CRYPTO_H
 
 #define NOMINMAX
+#define _WINSOCKAPI_
 
 #include <Windows.h>
 #include <capi.h>
@@ -10,6 +11,14 @@
 #include <vector>
 
 #include "error.h"
+
+#ifdef MIN
+#undef MIN
+#endif
+
+#ifdef MAX
+#undef MAX
+#endif
 
 namespace jwt {
 	namespace crypto {
@@ -153,7 +162,8 @@ namespace jwt {
 
 					result.resize(dwDataLen);
 
-					return CryptGetHashParam(hash, HP_HASHVAL, reinterpret_cast<BYTE*>(&result[0]), &dwDataLen, 0);
+					return CryptGetHashParam(hash, HP_HASHVAL, reinterpret_cast<BYTE*>(&result[0]), &dwDataLen, 0) !=
+						   FALSE;
 				}
 
 				CCryptHash(const CCryptHash&) = delete;
@@ -217,6 +227,16 @@ namespace jwt {
 		using details::LocalBuffer;
 
 		namespace helper {
+			inline void swap_buffer(BYTE* data, size_t size) {
+				BYTE* pa = data;
+				BYTE* pb = data + size - 1;
+
+				for (size_t i = 0; i < size / 2; i++, pa++, pb--) {
+					BYTE t = *pa;
+					*pa = *pb;
+					*pb = t;
+				}
+			}
 
 			/**
 			 * \brief Extract the public key of a pem certificate
@@ -325,7 +345,7 @@ namespace jwt {
 
 				DWORD cbKeyInfoBuffer = 0;
 				LocalBuffer<BYTE> keyInfoBuffer;
-				if (!CryptDecodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+				if (!CryptDecodeObjectEx(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
 										 reinterpret_cast<const BYTE*>(decodedStr.data()), decodedStr.size(),
 										 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
 										 &cbKeyInfoBuffer)) {
@@ -340,11 +360,13 @@ namespace jwt {
 				}
 
 				CCryptKey key;
-				if (!CryptImportPublicKeyInfo(context.get(), X509_ASN_ENCODING,
+				if (!CryptImportPublicKeyInfo(context.get(), X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
 											  reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(keyInfoBuffer.get()), &key)) {
 					ec = error::rsa_error::create_mem_bio_failed;
 					return {};
 				}
+
+				auto pKeyInfo = reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(keyInfoBuffer.get());
 
 				DWORD cbPKey = 0;
 				if (!CryptExportPublicKeyInfo(context.get(), AT_KEYEXCHANGE, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
@@ -355,14 +377,14 @@ namespace jwt {
 
 				std::vector<BYTE> pkeyBuffer(cbPKey);
 				if (!CryptExportPublicKeyInfo(context.get(), AT_KEYEXCHANGE, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-											  reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(pkeyBuffer.data()), &cbPKey)) {
+											  pKeyInfo, &cbPKey)) {
 					ec = error::rsa_error::create_mem_bio_failed;
 					return {};
 				}
 
-				if (!CryptEncodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO, pkeyBuffer.data(),
-										 CRYPT_ENCODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
-										 &cbKeyInfoBuffer)) {
+				if (!CryptEncodeObjectEx(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+										 pkeyBuffer.data(), CRYPT_ENCODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL,
+										 &keyInfoBuffer, &cbKeyInfoBuffer)) {
 					ec = error::rsa_error::create_mem_bio_failed;
 					return {};
 				}
@@ -416,12 +438,15 @@ namespace jwt {
 
 					DWORD cbKeyInfoBuffer = 0;
 					LocalBuffer<BYTE> keyInfoBuffer;
-					if (!CryptDecodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO, buffer.data(), buffer.size(),
+					if (!CryptDecodeObjectEx(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, X509_PUBLIC_KEY_INFO,
+											 buffer.data(), buffer.size(),
 											 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
 											 &cbKeyInfoBuffer)) {
 						ec = error::rsa_error::load_key_bio_read;
 						return {};
 					}
+
+					auto pKeyInfo = reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(keyInfoBuffer.get());
 
 					CCryptContext context;
 					if (!CryptAcquireContext(&context, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
@@ -430,8 +455,8 @@ namespace jwt {
 					}
 
 					CCryptKey key;
-					if (!CryptImportPublicKeyInfo(context.get(), X509_ASN_ENCODING,
-												  reinterpret_cast<PCERT_PUBLIC_KEY_INFO>(keyInfoBuffer.get()), &key)) {
+					if (!CryptImportPublicKeyInfo(context.get(), X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, pKeyInfo,
+												  &key)) {
 						ec = error::rsa_error::load_key_bio_read;
 						return {};
 					}
@@ -480,9 +505,9 @@ namespace jwt {
 
 				DWORD cbKeyInfoBuffer = 0;
 				LocalBuffer<BYTE> keyInfoBuffer;
-				if (!CryptDecodeObjectEx(X509_ASN_ENCODING, PKCS_PRIVATE_KEY_INFO, buffer.data(), buffer.size(),
-										 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
-										 &cbKeyInfoBuffer)) {
+				if (!CryptDecodeObjectEx(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, PKCS_PRIVATE_KEY_INFO, buffer.data(),
+										 buffer.size(), CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL,
+										 &keyInfoBuffer, &cbKeyInfoBuffer)) {
 					ec = error::rsa_error::load_key_bio_read;
 					return {};
 				}
@@ -491,8 +516,8 @@ namespace jwt {
 
 				DWORD cbPrivateKeyBuffer = 0;
 				LocalBuffer<BYTE> privateKeyInfoBuffer;
-				if (!CryptDecodeObjectEx(X509_ASN_ENCODING, PKCS_RSA_PRIVATE_KEY, pPrivateKeyInfo->PrivateKey.pbData,
-										 pPrivateKeyInfo->PrivateKey.cbData,
+				if (!CryptDecodeObjectEx(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, PKCS_RSA_PRIVATE_KEY,
+										 pPrivateKeyInfo->PrivateKey.pbData, pPrivateKeyInfo->PrivateKey.cbData,
 										 CRYPT_DECODE_ALLOC_FLAG | CRYPT_DECODE_NOCOPY_FLAG, NULL, &keyInfoBuffer,
 										 &cbKeyInfoBuffer)) {
 					ec = error::rsa_error::load_key_bio_read;
@@ -640,6 +665,8 @@ namespace jwt {
 						return {};
 					}
 
+					helper::swap_buffer(reinterpret_cast<PBYTE>(&res[0]), res.size());
+
 					return res;
 				}
 
@@ -697,7 +724,7 @@ namespace jwt {
 					std::string name)
 					: hash_alg(hash_alg), alg_name(std::move(name)) {
 					if (!private_key.empty()) {
-						helper::load_private_key_from_string(private_key, private_key_password);
+						pkey = helper::load_private_key_from_string(private_key, private_key_password);
 					} else if (!public_key.empty()) {
 						pkey = helper::load_public_key_from_string(public_key, public_key_password);
 					} else {
@@ -752,6 +779,8 @@ namespace jwt {
 						return {};
 					}
 
+					helper::swap_buffer(reinterpret_cast<PBYTE>(&signature[0]), signature.size());
+
 					return signature;
 				}
 
@@ -788,6 +817,9 @@ namespace jwt {
 						ec = error::signature_verification_error::verifyupdate_failed;
 						return;
 					}
+
+					//Swap in place, should probably copy the buffer
+					helper::swap_buffer(reinterpret_cast<PBYTE>(const_cast<PCHAR>(&signature[0])), signature.size());
 
 					if (!CryptVerifySignature(hash.get(), reinterpret_cast<const BYTE*>(signature.data()),
 											  signature.size(), key.get(), NULL, 0)) {
