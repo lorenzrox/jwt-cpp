@@ -1,0 +1,4 @@
+<map id="jwt::crypto::algorithm::ps512" name="jwt::crypto::algorithm::ps512">
+<area shape="rect" id="node1" title=" " alt="" coords="19,80,158,121"/>
+<area shape="rect" id="node2" href="$structjwt_1_1crypto_1_1algorithm_1_1pss.html" title="Base class for PSS&#45;RSA family of algorithms." alt="" coords="5,5,172,32"/>
+</map>
