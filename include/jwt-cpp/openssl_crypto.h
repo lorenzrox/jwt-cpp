@@ -12,8 +12,18 @@
 #include "error.h"
 
 // If openssl version less than 1.1
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-#define OPENSSL10
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L // 3.0.0
+#define JWT_OPENSSL_3_0
+#elif OPENSSL_VERSION_NUMBER >= 0x10101000L // 1.1.1
+#define JWT_OPENSSL_1_1_1
+#elif OPENSSL_VERSION_NUMBER >= 0x10100000L // 1.1.0
+#define JWT_OPENSSL_1_1_0
+#elif OPENSSL_VERSION_NUMBER >= 0x10000000L // 1.0.0
+#define JWT_OPENSSL_1_0_0
+#endif
+
+#if defined(LIBRESSL_VERSION_NUMBER)
+#define JWT_OPENSSL_1_0_0
 #endif
 
 // If openssl version less than 1.1.1
